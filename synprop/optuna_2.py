@@ -364,17 +364,6 @@ if __name__ == "__main__":
 
     # --- Tải dữ liệu một lần ---
     print("--- Loading Data ---")
-    # Giả sử data_wrapper_7 đã được import và hoạt động đúng
-    # Bạn cần đảm bảo data_wrapper_7 trả về các DataLoader của PyTorch Geometric hoặc tương thích
-    # data_provider = data_wrapper_7(
-    #     data_path=args.data_path,
-    #     graph_path=args.graph_path,
-    #     target=args.y_column,
-    #     batch_size=args.batch_size,
-    #     num_workers=4, # Có thể điều chỉnh
-    #     train_size=0.8, # Ví dụ, không có trong args gốc
-    #     val_size=0.1   # Ví dụ
-    # )
 
     data_path=args.data_path
     graph_path=args.graph_path
