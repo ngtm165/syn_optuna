@@ -62,11 +62,11 @@ def objective(trial, args):
     # Sử dụng đúng tên tham số 'drop_ratio' như trong model.__init__ gốc
     drop_ratio = trial.suggest_float("drop_ratio", 0.0, 0.5, step=0.05)
     batch_size = trial.suggest_int("batch_size", 16, 256, step=16) # Ví dụ tune batch_size
-    lr = trial.suggest_float("lr", 1e-5, 1e-3, log=True)
-    depth = trial.suggest_int("depth", 2, 6) # Số lớp / bước lặp T
+    # lr = trial.suggest_float("lr", 1e-5, 1e-3, log=True)
+    # depth = trial.suggest_int("depth", 2, 6) # Số lớp / bước lặp T
     node_hid_feats = trial.suggest_categorical("node_hid_feats", [128, 256, 300, 512])
     # edge_hid = trial.suggest_categorical("edge_hid_feats", [128, 256, 300, 512])
-    weight_decay = trial.suggest_float("weight_decay", 1e-6, 1e-4, log=True)
+    # weight_decay = trial.suggest_float("weight_decay", 1e-6, 1e-4, log=True)
     readout_option = trial.suggest_categorical("readout_option", [True, False])
     # readout_feats = trial.suggest_int("readout_feats", 512, 2048, step=512) if readout_option else node_hid_feats # Kích thước readout phụ thuộc optio
 
@@ -121,11 +121,11 @@ def objective(trial, args):
             out_dim=1,
             predict_hidden_feats=predict_hidden_feats,
             drop_ratio=drop_ratio,
-            lr=lr, 
-            depth=depth,
+            # lr=lr, 
+            # depth=depth,
             node_hid_feats=node_hid_feats,
             # edge_hid = edge_hid_feats,
-            weight_decay=weight_decay,
+            # weight_decay=weight_decay,
             readout_option=readout_option,
             # readout_feats=readout_feats,
 
@@ -147,8 +147,8 @@ def objective(trial, args):
             val_loader,
             model_path="temp_model.pth", # Đường dẫn này không quan trọng lắm vì ta đọc log
             device=device,
-            lr=lr, ##mới thêm 
-            depth=depth, ##mới thêm
+            # lr=lr, ##mới thêm 
+            # depth=depth, ##mới thêm
             epochs=args.epochs
             # Không thể truyền lr, weight_decay
             # Không thể bật save_model=False
@@ -257,11 +257,11 @@ def finetune_with_optuna_limited(args):
                 out_dim=1,
                 predict_hidden_feats=best_params["predict_hidden_feats"],
                 drop_ratio=best_params["drop_ratio"],
-                lr=best_params['lr'], 
-                depth=best_params['depth'],
+                # lr=best_params['lr'], 
+                # depth=best_params['depth'],
                 node_hid_feats=best_params['node_hid_feats'],
                 # edge_hid=best_params['edge_hid_feats'],
-                weight_decay=best_params['weight_decay'], ##decayo
+                # weight_decay=best_params['weight_decay'], ##decayo
                 readout_option=best_params['readout_option'],
                 # readout_feats=best_params['readout_feats'],
 
@@ -311,11 +311,11 @@ def finetune_with_optuna_limited(args):
                 out_dim=1,
                 predict_hidden_feats=best_params["predict_hidden_feats"],
                 drop_ratio=best_params["drop_ratio"],
-                lr=best_params['lr'], 
-                depth=best_params['depth'],
+                # lr=best_params['lr'], 
+                # depth=best_params['depth'],
                 node_hid_feats=best_params['node_hid_feats'],
                 # edge_hid=best_params['edge_hid_feats'],
-                weight_decay=best_params['weight_decay'], ##decayo
+                # weight_decay=best_params['weight_decay'], ##decayo
                 readout_option=best_params['readout_option'],
                 # readout_feats=best_params['readout_feats'],
             ).to(device)

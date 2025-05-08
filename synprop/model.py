@@ -28,8 +28,8 @@ class model(nn.Module):
         predict_hidden_feats=512, #default = 512
         readout_option=False,
         drop_ratio=0.1, #default = 0.1
-        #lr, ##mới thêm
-        # depth=depth, ##mới thêm
+        # lr, ##mới thêm
+        # depth, ##mới thêm
     ):
         super(model, self).__init__()
         emb_dim=1024
@@ -61,7 +61,7 @@ def train(
     device,
     # lr=5e-4, ##mới thêm 5e-4
     # weight_decay=1e-5, ##mới thêm 1e-5
-    optimizer, 
+    # optimizer, 
     epochs=20,
     current_epoch=0,
     best_val_loss=1e10,

@@ -8,8 +8,10 @@ import numpy as np
 from torch.optim import Adam
 from tqdm import tqdm
 from sklearn.metrics import accuracy_score, matthews_corrcoef, roc_auc_score, root_mean_squared_error, mean_absolute_error
+from pathlib import Path
 import sys
 import os
+import pandas as pd
 import argparse
 import random
 import optuna # Import Optuna
@@ -45,49 +47,50 @@ class GNN(nn.Module):
             nn.Linear(edge_in_feats, node_hid_feats) # GINE yêu cầu edge_feats có cùng dim với node_feats
         )
 
-        self.gnn_layers = nn.ModuleList(
-            [
-                GINEConv(
-                    nn=torch.nn.Sequential(
-                        nn.Linear(node_hid_feats, node_hid_feats),
-                        nn.ReLU(),
-                        nn.Linear(node_hid_feats, node_hid_feats),
-                    )
-                )
-                for _ in range(self.depth)
-            ]
-        )
+        self.gnn_layers = nn.ModuleList()
+        for _ in range(self.depth):
+            # Mạng nn bên trong GINEConv có thể phức tạp hơn
+            # Ở đây dùng một MLP đơn giản: Linear -> ReLU -> Linear
+            block = nn.Sequential(
+                nn.Linear(node_hid_feats, node_hid_feats),
+                nn.ReLU(),
+                nn.Linear(node_hid_feats, node_hid_feats),
+            )
+            self.gnn_layers.append(GINEConv(nn=block, train_eps=True)) # train_eps=True là phổ biến
 
-        self.sparsify = nn.Sequential(
-            nn.Linear(node_hid_feats, readout_feats), nn.PReLU()
-        )
-
+        # Lớp readout_feats này chỉ áp dụng nếu readout_option = True
+        if self.readout_option:
+            self.sparsify = nn.Sequential(
+                nn.Linear(node_hid_feats, readout_feats), nn.PReLU() # Sửa lỗi có thể xảy ra: PReLU() thay vì PReLU
+            )
+        
         self.dropout = nn.Dropout(dr)
-        self.readout_option = readout_option
+
 
     def forward(self, data):
         node_feats_orig = data.x
         edge_feats_orig = data.edge_attr
         batch = data.batch
+        edge_index = data.edge_index # Đảm bảo edge_index được lấy từ data
 
-        node_feats_init = self.project_node_feats(node_feats_orig)
-        node_feats = node_feats_init
-        edge_feats = self.project_edge_feats(edge_feats_orig)
+        node_feats = self.project_node_feats(node_feats_orig)
+        edge_feats_projected = self.project_edge_feats(edge_feats_orig) # Sử dụng edge_feats đã chiếu
 
         for i in range(self.depth):
-            node_feats = self.gnn_layers[i](node_feats, data.edge_index, edge_feats)
+            node_feats = self.gnn_layers[i](node_feats, edge_index, edge_feats_projected)
+            if i < self.depth - 1: # Không áp dụng ReLU và Dropout cho lớp cuối cùng của GNN block
+                node_feats = nn.functional.relu(node_feats) # Kích hoạt ReLU sau mỗi lớp GINConv
+            node_feats = self.dropout(node_feats) # Áp dụng dropout
 
-            if i < self.depth - 1:
-                node_feats = nn.functional.relu(node_feats)
-
-            node_feats = self.dropout(node_feats)
-
-        readout = global_add_pool(node_feats, batch)
+        # Global pooling
+        readout_pooled = global_add_pool(node_feats, batch)
 
         if self.readout_option:
-            readout = self.sparsify(readout)
+            final_readout = self.sparsify(readout_pooled)
+        else:
+            final_readout = readout_pooled # Nếu không có readout_option, output là node_hid_feats
 
-        return readout
+        return final_readout
 
 
 #** THIẾT KẾ MODEL**
@@ -102,13 +105,12 @@ class Model(nn.Module): # Đổi tên lớp từ model thành Model để tránh
         gnn_node_hid_feats=300,
         gnn_readout_feats=1024, # Sẽ là emb_dim cho MLP nếu gnn_readout_option=True
         gnn_dr=0.1,
-        gnn_readout_option=False,
+        gnn_readout_option=True,
         # MLP params
         mlp_predict_hidden_feats=512,
         mlp_drop_ratio=0.1,
     ):
         super(Model, self).__init__()
-        emb_dim=1024
 
         self.gnn = GNN(
             node_in_feats=node_in_feats,
@@ -120,8 +122,14 @@ class Model(nn.Module): # Đổi tên lớp từ model thành Model để tránh
             readout_option=gnn_readout_option
         )
 
+        # Xác định kích thước đầu vào cho MLP dựa trên output của GNN
+        if gnn_readout_option:
+            current_emb_dim = gnn_readout_feats
+        else:
+            current_emb_dim = gnn_node_hid_feats # Output của GNN là node_hid_feats nếu không có sparsify
+
         self.predict = nn.Sequential(
-            torch.nn.Linear(emb_dim, mlp_predict_hidden_feats),
+            torch.nn.Linear(current_emb_dim, mlp_predict_hidden_feats),
             torch.nn.PReLU(),
             torch.nn.Dropout(mlp_drop_ratio),
             torch.nn.Linear(mlp_predict_hidden_feats, mlp_predict_hidden_feats),
@@ -136,17 +144,19 @@ class Model(nn.Module): # Đổi tên lớp từ model thành Model để tránh
         return out
 
 
-def train(
+def train_and_evaluate( # Đổi tên từ train để rõ ràng hơn cho Optuna
     trial, # Thêm trial cho Optuna pruning (nếu dùng)
     args, # Các args cố định
     net,
     optimizer, # Truyền optimizer vào
     loss_fn, # Truyền loss_fn vào
-    train_loader, 
-    val_loader,   
+    train_loader_global, # Sử dụng global loader
+    val_loader_global,   # Sử dụng global loader
     device,
     epochs_per_trial, # Số epochs cho mỗi trial Optuna
 ):
+    # Không lưu model hoặc monitor file trong mỗi trial của Optuna trừ khi cần thiết
+    # best_val_loss = 1e10 # Reset cho mỗi trial
 
     for epoch in range(epochs_per_trial):
         net.train()
@@ -155,7 +165,7 @@ def train(
         targets_train = []
         preds_train = []
 
-        for batchdata in train_loader: # Không dùng tqdm ở đây để log đỡ rối
+        for batchdata in train_loader_global: # Không dùng tqdm ở đây để log đỡ rối
             batchdata = batchdata.to(device)
             pred = net(batchdata)
             labels = batchdata.y.to(device) # Đảm bảo labels trên cùng device
@@ -181,12 +191,22 @@ def train(
             optimizer.step()
             train_loss_list.append(loss.item())
 
+        # Không in nhiều trong các epoch của Optuna trials để tránh quá nhiều output
+        # rmse_train = root_mean_squared_error(targets_train, preds_train)
+        # mae_train = mean_absolute_error(targets_train, preds_train)
+        # print(f"Trial {trial.number} Epoch {epoch}, Train Loss: {np.mean(train_loss_list):.3f}, RMSE: {rmse_train:.3f}")
+
 
     # Validation sau khi hoàn thành tất cả các epoch cho trial này
     net.eval()
-    val_rmse, val_mae, val_loss_mean = inference(args, net, val_loader, device, loss_fn)
+    val_rmse, val_mae, val_loss_mean = inference(args, net, val_loader_global, device, loss_fn)
     
     print(f"Trial {trial.number} - Val Loss: {val_loss_mean:.3f}, Val RMSE: {val_rmse:.3f}, Val MAE: {val_mae:.3f}")
+
+    # Optuna Pruning (tùy chọn):
+    # trial.report(val_rmse, epoch) # Báo cáo metric trung gian
+    # if trial.should_prune():
+    #     raise optuna.exceptions.TrialPruned()
         
     return val_rmse # Optuna sẽ tối thiểu hóa giá trị này
 
@@ -238,8 +258,8 @@ def inference(args, net, test_loader, device, loss_fn=None):
 
 # --- Biến toàn cục cho data loaders và thuộc tính dữ liệu ---
 # Sẽ được khởi tạo trong khối __main__
-train_loader = None
-val_loader = None
+train_loader_global = None
+val_loader_global = None
 test_loader_global = None # Thêm test_loader nếu bạn muốn test sau HPO
 node_attr_dim_global = 0
 edge_attr_dim_global = 0
@@ -247,7 +267,7 @@ args_global = None # Để lưu các args cố định
 
 
 def objective(trial: optuna.trial.Trial) -> float:
-    global train_loader, val_loader, node_attr_dim_global, edge_attr_dim_global, args_global
+    global train_loader_global, val_loader_global, node_attr_dim_global, edge_attr_dim_global, args_global
     
     # Device setup
     device = (
@@ -296,14 +316,14 @@ def objective(trial: optuna.trial.Trial) -> float:
 
     # Huấn luyện và đánh giá
     # args_global.epochs ở đây là số epochs cho mỗi Optuna trial
-    val_rmse = train(
+    val_rmse = train_and_evaluate(
         trial,
         args_global,
         net,
         optimizer,
         loss_fn,
-        train_loader,
-        val_loader,
+        train_loader_global,
+        val_loader_global,
         device,
         epochs_per_trial=args_global.epochs_per_trial # Sử dụng epochs_per_trial
     )
@@ -313,7 +333,7 @@ def objective(trial: optuna.trial.Trial) -> float:
 
 if __name__ == "__main__":
     arg_parser = argparse.ArgumentParser()
-    arg_parser.add_argument("--batch_size", type=int, default=16) # Giữ nguyên
+    arg_parser.add_argument("--batch_size", type=int, default=48) # Giữ nguyên
     arg_parser.add_argument("--epochs_per_trial", type=int, default=20, help="Number of epochs for each Optuna trial") # Giảm để HPO nhanh hơn
     arg_parser.add_argument("--n_optuna_trials", type=int, default=50, help="Number of Optuna trials")
     arg_parser.add_argument("--device", type=int, default=0, help="GPU device index, None for CPU")
@@ -356,7 +376,7 @@ if __name__ == "__main__":
     #     target=args.y_column,
     #     batch_size=args.batch_size,
     #     num_workers=4, # Có thể điều chỉnh
-    #     train_size=0.1, # Ví dụ, không có trong args gốc
+    #     train_size=0.8, # Ví dụ, không có trong args gốc
     #     val_size=0.1   # Ví dụ
     # )
 
@@ -366,17 +386,17 @@ if __name__ == "__main__":
     batch_size=args.batch_size
 
     data_provider = data_wrapper_7(data_path, graph_path, target, batch_size,4, 0.1, 0.1)
-    train_loader, val_loader, test_loader_global = data_provider.get_data_loaders()
-    
+    train_loader_global, val_loader_global, test_loader_global = data_provider.get_data_loaders()
+
     # Lấy node_attr_dim và edge_attr_dim từ data_provider hoặc dataset
     # Điều này phụ thuộc vào cách data_wrapper_7 của bạn được thiết kế
     # Ví dụ:
     if hasattr(data_provider, 'node_attr_dim') and hasattr(data_provider, 'edge_attr_dim'):
         node_attr_dim_global = data_provider.node_attr_dim
         edge_attr_dim_global = data_provider.edge_attr_dim
-    elif hasattr(train_loader.dataset, 'num_node_features') and hasattr(train_loader.dataset, 'num_edge_features'):
-         node_attr_dim_global = train_loader.dataset.num_node_features
-         edge_attr_dim_global = train_loader.dataset.num_edge_features
+    elif hasattr(train_loader_global.dataset, 'num_node_features') and hasattr(train_loader_global.dataset, 'num_edge_features'):
+         node_attr_dim_global = train_loader_global.dataset.num_node_features
+         edge_attr_dim_global = train_loader_global.dataset.num_edge_features
     else: # Fallback nếu không tìm thấy, bạn cần cung cấp giá trị đúng
         print("Không thể tự động xác định node_attr_dim và edge_attr_dim. Sử dụng giá trị giả định.")
         node_attr_dim_global = 5 # Cần thay thế bằng giá trị đúng từ dữ liệu của bạn
@@ -425,3 +445,82 @@ if __name__ == "__main__":
     print("  Best hyperparameters: ")
     for key, value in best_trial.params.items():
         print(f"    {key}: {value}")
+
+    # --- Huấn luyện lại model tốt nhất với toàn bộ dữ liệu huấn luyện (tùy chọn) và test ---
+    print("\n--- Training and Testing with Best Hyperparameters ---")
+    best_params = best_trial.params
+    
+    final_device = (
+        torch.device(f"cuda:{args.device}")
+        if torch.cuda.is_available() and args.device is not None
+        else torch.device("cpu")
+    )
+
+    best_model = Model(
+        node_in_feats=node_attr_dim_global,
+        edge_in_feats=edge_attr_dim_global,
+        out_dim=1,
+        gnn_depth=best_params["gnn_depth"],
+        gnn_node_hid_feats=best_params["gnn_node_hid_feats"],
+        gnn_readout_feats=best_params.get("gnn_readout_feats", best_params["gnn_node_hid_feats"]), # Xử lý nếu readout_option=False
+        gnn_dr=best_params["gnn_dr"],
+        gnn_readout_option=best_params["gnn_readout_option"],
+        mlp_predict_hidden_feats=best_params["mlp_predict_hidden_feats"],
+        mlp_drop_ratio=best_params["mlp_drop_ratio"],
+    ).to(final_device)
+
+    # Huấn luyện lại với số epochs lớn hơn nếu muốn
+    final_epochs = args_global.epochs_per_trial * 2 # Ví dụ: gấp đôi số epochs của trial
+    print(f"Training best model for {final_epochs} epochs...")
+    
+    final_optimizer = Adam(best_model.parameters(), lr=best_params["lr"], weight_decay=best_params["weight_decay"])
+    final_loss_fn = torch.nn.MSELoss()
+
+    # Vòng lặp huấn luyện cuối cùng (tương tự train_and_evaluate nhưng không có trial)
+    best_val_rmse_overall = float('inf')
+    final_model_path = os.path.join(args.model_path_root, "final_best_model.pt")
+
+    for epoch in range(final_epochs):
+        best_model.train()
+        for batchdata in train_loader_global:
+            batchdata = batchdata.to(final_device)
+            pred = best_model(batchdata)
+            labels = batchdata.y.to(final_device)
+            if pred.shape != labels.shape:
+                 if labels.ndim == 1: labels = labels.view_as(pred)
+                 elif pred.ndim == 1 and labels.ndim == 2 and labels.shape[1] == 1: labels = labels.squeeze(1)
+            loss = final_loss_fn(pred.view(-1), labels.view(-1))
+            final_optimizer.zero_grad()
+            loss.backward()
+            final_optimizer.step()
+        
+        # Đánh giá trên val set
+        current_val_rmse, _, current_val_loss = inference(args, best_model, val_loader_global, final_device, final_loss_fn)
+        print(f"Final Training Epoch {epoch+1}/{final_epochs}, Val RMSE: {current_val_rmse:.4f}, Val Loss: {current_val_loss:.4f}")
+        if current_val_rmse < best_val_rmse_overall:
+            best_val_rmse_overall = current_val_rmse
+            torch.save(best_model.state_dict(), final_model_path)
+            print(f"Saved best model to {final_model_path} with Val RMSE: {best_val_rmse_overall:.4f}")
+
+
+    # Tải model tốt nhất đã lưu và đánh giá trên test set
+    print(f"\nLoading best model from {final_model_path} for final testing...")
+    best_model.load_state_dict(torch.load(final_model_path))
+
+    test_rmse, test_mae, test_loss = inference(args, best_model, test_loader_global, final_device, final_loss_fn)
+    print(f"--- Test Results with Best Hyperparameters ---")
+    print(f"  Test RMSE: {test_rmse:.4f}")
+    print(f"  Test MAE: {test_mae:.4f}")
+    print(f"  Test Loss: {test_loss:.4f}")
+
+    # Lưu kết quả test
+    test_results_log_path = os.path.join(args.monitor_folder, "final_test_results.txt")
+    with open(test_results_log_path, "w") as f:
+        f.write("Best Hyperparameters:\n")
+        for key, value in best_params.items():
+            f.write(f"  {key}: {value}\n")
+        f.write("\nTest Metrics:\n")
+        f.write(f"  Test RMSE: {test_rmse:.4f}\n")
+        f.write(f"  Test MAE: {test_mae:.4f}\n")
+        f.write(f"  Test Loss: {test_loss:.4f}\n")
+    print(f"Final test results saved to {test_results_log_path}")
