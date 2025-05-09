@@ -329,7 +329,7 @@ def objective(trial: optuna.trial.Trial) -> float:
 
 if __name__ == "__main__":
     arg_parser = argparse.ArgumentParser()
-    arg_parser.add_argument("--batch_size", type=int, default=32) # Giữ nguyên
+    arg_parser.add_argument("--batch_size", type=int, default=16) # Giữ nguyên
     arg_parser.add_argument("--epochs_per_trial", type=int, default=20, help="Number of epochs for each Optuna trial") # Giảm để HPO nhanh hơn
     arg_parser.add_argument("--n_optuna_trials", type=int, default=50, help="Number of Optuna trials")
     arg_parser.add_argument("--device", type=int, default=0, help="GPU device index, None for CPU")
@@ -338,9 +338,9 @@ if __name__ == "__main__":
     arg_parser.add_argument("--monitor_folder", type=str, default="./Data/monitor_optuna/") # Đổi folder
     arg_parser.add_argument("--monitor_name", type=str, default="monitor_optuna.txt")
     arg_parser.add_argument("--model_path_root", type=str, default="./Data/model_optuna/") # Để lưu model tốt nhất
-    arg_parser.add_argument("--data_path", type=str, default='./Data/regression/e2sn2/e2sn2.csv')
-    arg_parser.add_argument("--graph_path", type=str, default='./Data/regression/e2sn2/its_new/e2sn2.pkl.gz')
-    arg_parser.add_argument("--y_column", type=str, default="ea")
+    arg_parser.add_argument("--data_path", type=str, default='./Data/regression/cycloaddition/cycloaddition.csv')
+    arg_parser.add_argument("--graph_path", type=str, default='./Data/regression/cycloaddition/its_new/cycloaddition.pkl.gz')
+    arg_parser.add_argument("--y_column", type=str, default="G_act")
     arg_parser.add_argument("--seed", type=int, default=42)
     
     args = arg_parser.parse_args()
