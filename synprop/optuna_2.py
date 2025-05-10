@@ -329,7 +329,7 @@ def objective(trial: optuna.trial.Trial) -> float:
 
 if __name__ == "__main__":
     arg_parser = argparse.ArgumentParser()
-    arg_parser.add_argument("--batch_size", type=int, default=16) # Giữ nguyên
+    arg_parser.add_argument("--batch_size", type=int, default=48) # Giữ nguyên
     arg_parser.add_argument("--epochs_per_trial", type=int, default=20, help="Number of epochs for each Optuna trial") # Giảm để HPO nhanh hơn
     arg_parser.add_argument("--n_optuna_trials", type=int, default=50, help="Number of Optuna trials")
     arg_parser.add_argument("--device", type=int, default=0, help="GPU device index, None for CPU")
